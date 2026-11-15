@@ -1,6 +1,6 @@
 # OverleafMCP (`overleaf-mcp`)
 
-A hybrid **Model Context Protocol (MCP)** server in Python that lets AI coding agents (**Antigravity**, **Claude Desktop**, **Cursor**, **Windsurf**, etc.) upload LaTeX files and folders, create brand-new Overleaf projects, pull remote sources, sync via Git Bridge, and trigger remote PDF compilation with structured LaTeX error log diagnostics.
+A hybrid **Model Context Protocol (MCP)** server in Python that lets AI coding agents (**Antigravity**, **OpenAI Codex**, **Claude Code**, **Claude Desktop**, **Cursor**, **Windsurf**, etc.) upload LaTeX files and folders, create brand-new Overleaf projects, pull remote sources, sync via Git Bridge, and trigger remote PDF compilation with structured LaTeX error log diagnostics.
 
 Unlike Git-only Overleaf MCP servers that require a paid Overleaf subscription and manual project IDs, **OverleafMCP** supports **both**:
 1. **Web Session Authentication (Free, Paid, Institutional & Self-Hosted):** Auto-detects your active Chrome/Firefox Overleaf login or uses an `overleaf_session2` cookie — enabling project listing, new project creation, binary figure/folder uploads, and remote PDF compilation even on **Free Overleaf accounts**.
@@ -12,7 +12,38 @@ Unlike Git-only Overleaf MCP servers that require a paid Overleaf subscription a
 
 Requires [uv](https://docs.astral.sh/uv/) (`brew install uv` or `curl -LsSf https://astral.sh/uv/install.sh | sh`).
 
-Add this to your MCP client config:
+### 1. OpenAI Codex (CLI & Codex App)
+
+Run the one-liner CLI command:
+
+```bash
+codex mcp add overleaf -- uvx --from git+https://github.com/ajmainapon/OverleafMCP overleaf-mcp
+```
+
+Or add this TOML block to `~/.codex/config.toml` (note: Codex uses **TOML**, not JSON):
+
+```toml
+[mcp_servers.overleaf]
+command = "uvx"
+args = ["--from", "git+https://github.com/ajmainapon/OverleafMCP", "overleaf-mcp"]
+startup_timeout_sec = 30.0
+
+# Optional environment variables:
+# [mcp_servers.overleaf.env]
+# OVERLEAF_COOKIE = "overleaf_session2=s%3A..."
+# OVERLEAF_GIT_TOKEN = "olp_..."
+# OVERLEAF_HOST = "www.overleaf.com"
+```
+
+### 2. Claude Code CLI
+
+```bash
+claude mcp add overleaf -- uvx --from git+https://github.com/ajmainapon/OverleafMCP overleaf-mcp
+```
+
+### 3. Antigravity, Claude Desktop & Cursor (JSON Config)
+
+Add to your client's MCP JSON configuration file:
 - **Antigravity:** `~/.gemini/config/mcp_config.json`
 - **Claude Desktop (macOS):** `~/Library/Application Support/Claude/claude_desktop_config.json`
 - **Claude Desktop (Windows):** `%APPDATA%\Claude\claude_desktop_config.json`
@@ -33,7 +64,7 @@ Add this to your MCP client config:
 }
 ```
 
-*(Optional)* You can also pass credentials via `env` instead of configuring them interactively through the agent:
+*(Optional)* Pass credentials via `env` instead of configuring interactively through the agent:
 
 ```json
 {
@@ -57,7 +88,7 @@ Add this to your MCP client config:
 
 ---
 
-## Local Clone Installation (For Development)
+## Local Clone Installation (Fastest Startup / Development)
 
 ```bash
 git clone https://github.com/ajmainapon/OverleafMCP.git
@@ -65,8 +96,16 @@ cd OverleafMCP
 uv sync
 ```
 
-Point your MCP config to the local virtualenv binary for instant startup:
+Point your MCP client directly at the virtualenv binary:
 
+**Codex (`~/.codex/config.toml`):**
+```toml
+[mcp_servers.overleaf]
+command = "/absolute/path/to/OverleafMCP/.venv/bin/overleaf-mcp"
+args = []
+```
+
+**Antigravity / Claude Desktop / Cursor (`mcp_config.json`):**
 ```json
 {
   "mcpServers": {
@@ -132,11 +171,12 @@ All project-scoped tools accept a **24-character Project ID**, a **full Overleaf
 
 ---
 
-## Security Notes
+## Security & Reliability Notes
 
 - **Local-only secret storage:** Credentials configured via `overleaf_configure_auth` are stored at `~/.config/overleaf-mcp/credentials.json` with strict `0600` (`rw-------`) user-only permissions.
 - **Zero plaintext Git tokens in `.git/config`:** Git Bridge operations inject transient `http.extraHeader` Basic Auth headers per subprocess call and scrub tokens from error output.
-- **Zip-slip & path traversal protection:** Archive extraction and remote file uploads normalize paths and block `..` traversal.
+- **Strict Stdio isolation:** Browser keyring/cookie loaders redirect `stdout` to `stderr` so third-party warnings never corrupt the JSON-RPC stream in strict clients like Codex.
+- **Socket & Zip-Slip safety:** Socket.IO metadata connections close deterministically in `finally` blocks, and archive extraction enforces `Path.is_relative_to()` containment.
 
 ---
 

@@ -10,7 +10,7 @@ try:
 except ImportError:  # pragma: no cover - compatibility with mcp < 2.0
     from mcp.server.fastmcp import FastMCP as MCPServer  # type: ignore[no-redef]
 
-from .config import CREDENTIALS_FILE, OverleafConfig
+from .config import OverleafConfig, get_credentials_file
 from .git_client import OverleafGitClient, extract_project_id_from_ref
 from .web_client import OverleafWebClient
 
@@ -47,7 +47,7 @@ def overleaf_auth_status(verify_live: bool = True) -> str:
     status: dict[str, Any] = {
         "host": cfg.host,
         "git_host": cfg.git_host,
-        "credentials_file": str(CREDENTIALS_FILE),
+        "credentials_file": str(get_credentials_file()),
         "cookie_configured": bool(cfg.cookie),
         "git_token_configured": bool(cfg.git_token),
     }

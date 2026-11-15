@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import fnmatch
+import contextlib
 import http.cookiejar as cookielib
 import io
 import json
-import os
 import posixpath
 import re
+import sys
 import time
 import zipfile
 from pathlib import Path
@@ -20,37 +20,10 @@ import requests
 from bs4 import BeautifulSoup
 from pyoverleaf._webapi import ProjectFile, ProjectFolder
 
-from .config import OverleafConfig
+from .config import DEFAULT_IGNORE_PATTERNS, OverleafConfig, should_ignore
 
 _PROJECT_ID_RE = re.compile(r"^[0-9a-f]{24}$", re.IGNORECASE)
 _PROJECT_URL_RE = re.compile(r"/project/([0-9a-f]{24})", re.IGNORECASE)
-
-DEFAULT_IGNORE_PATTERNS = (
-    ".git",
-    ".svn",
-    ".hg",
-    ".DS_Store",
-    "__pycache__",
-    ".venv",
-    "venv",
-    "node_modules",
-    "*.aux",
-    "*.fdb_latexmk",
-    "*.fls",
-    "*.synctex.gz",
-    "*.out",
-    "*.toc",
-    "*.lof",
-    "*.lot",
-)
-
-
-def _should_ignore(rel_parts: tuple[str, ...], ignore_patterns: tuple[str, ...]) -> bool:
-    for part in rel_parts:
-        for pat in ignore_patterns:
-            if fnmatch.fnmatch(part, pat):
-                return True
-    return False
 
 
 def _parse_cookie_string(raw: str) -> dict[str, str]:
@@ -68,6 +41,24 @@ def _parse_cookie_string(raw: str) -> dict[str, str]:
         k, v = chunk.split("=", 1)
         cookies[k.strip()] = v.strip()
     return cookies
+
+
+def _safe_json(resp: requests.Response, context: str) -> dict[str, Any]:
+    """Parse a JSON response safely, surfacing clear errors on HTML login redirects or 502 pages."""
+    if "/login" in resp.url:
+        raise RuntimeError(
+            f"{context} redirected to login ({resp.url}). Your Overleaf session cookie has expired."
+        )
+    try:
+        data = resp.json()
+    except ValueError as exc:
+        snippet = resp.text[:300].strip().replace("\n", " ")
+        raise RuntimeError(
+            f"{context} returned non-JSON response (HTTP {resp.status_code}): {snippet}"
+        ) from exc
+    if not isinstance(data, dict):
+        raise RuntimeError(f"{context} returned unexpected JSON payload: {type(data).__name__}")
+    return data
 
 
 def parse_latex_log(log_text: str, max_items: int = 25) -> dict[str, Any]:
@@ -102,6 +93,27 @@ def parse_latex_log(log_text: str, max_items: int = 25) -> dict[str, Any]:
         "warnings": warnings[:max_items],
         "log_tail": "\n".join(lines[-40:]) if lines else "",
     }
+
+
+def safe_extract_zip(zip_bytes: bytes, dest: Path) -> list[str]:
+    """Extract a zip archive into dest while blocking zip-slip path traversal (including prefix siblings)."""
+    dest_resolved = dest.expanduser().resolve()
+    dest_resolved.mkdir(parents=True, exist_ok=True)
+
+    extracted: list[str] = []
+    with zipfile.ZipFile(io.BytesIO(zip_bytes), "r") as zf:
+        for member in zf.infolist():
+            member_path = (dest_resolved / member.filename).resolve()
+            if not member_path.is_relative_to(dest_resolved):
+                continue
+            if member_path == dest_resolved or member.is_dir():
+                member_path.mkdir(parents=True, exist_ok=True)
+            else:
+                member_path.parent.mkdir(parents=True, exist_ok=True)
+                with zf.open(member, "r") as src_f:
+                    member_path.write_bytes(src_f.read())
+                extracted.append(member_path.relative_to(dest_resolved).as_posix())
+    return extracted
 
 
 class OverleafWebClient:
@@ -141,7 +153,9 @@ class OverleafWebClient:
             self._auth_source = "configured_cookie"
         else:
             try:
-                raw_jar = browser_cookie3.load()
+                # Redirect stdout -> stderr so keyring/browser backends never corrupt MCP stdio JSON-RPC
+                with contextlib.redirect_stdout(sys.stderr):
+                    raw_jar = browser_cookie3.load()
             except Exception as exc:
                 raise RuntimeError(
                     f"Could not read local browser cookies ({exc}). "
@@ -178,6 +192,33 @@ class OverleafWebClient:
     def _session(self) -> requests.Session:
         api = self.get_api()
         return api._get_session()
+
+    def _get_project_root_folder(self, project_id: str) -> ProjectFolder:
+        """Fetch project root folder via Socket.IO while guaranteeing socket.close() (fixes pyoverleaf leak)."""
+        api = self.get_api()
+        socket = api._open_socket(project_id)
+        try:
+            while True:
+                line = socket.recv()
+                if isinstance(line, bytes):
+                    line = line.decode("utf-8", errors="replace")
+                if line.startswith("7:"):
+                    raise RuntimeError(
+                        f"Unauthorized or rate-limited fetching files for project {project_id} ({line[:80]}). "
+                        "Verify project permissions and session cookie."
+                    )
+                if line.startswith("5:"):
+                    break
+            payload = json.loads(line[len("5:") :].lstrip(":"))
+            if payload.get("name") != "joinProjectResponse":
+                raise RuntimeError(f"Unexpected Socket.IO event: {payload.get('name')}")
+            project_data = payload["args"][0]["project"]
+            return ProjectFolder.from_data(project_data["rootFolder"][0])
+        finally:
+            try:
+                socket.close()
+            except Exception:
+                pass
 
     def _fetch_dashboard_html_and_csrf(self) -> tuple[BeautifulSoup, str]:
         session = self._session()
@@ -302,7 +343,7 @@ class OverleafWebClient:
 
     def list_files(self, project: str) -> dict[str, Any]:
         pid = self.resolve_project_id(project)
-        root = self.get_api().project_get_files(pid)
+        root = self._get_project_root_folder(pid)
         entries = self._flatten_tree(root)
         return {
             "project_id": pid,
@@ -369,7 +410,7 @@ class OverleafWebClient:
     ) -> dict[str, Any]:
         pid = self.resolve_project_id(project)
         api = self.get_api()
-        root = root_cache or api.project_get_files(pid)
+        root = root_cache or self._get_project_root_folder(pid)
 
         norm_path = posixpath.normpath(remote_path.lstrip("/"))
         if norm_path in ("", ".") or norm_path.startswith(".."):
@@ -380,6 +421,10 @@ class OverleafWebClient:
 
         target_folder = self._ensure_folder(pid, root, parent_dir)
         uploaded = api.project_upload_file(pid, target_folder.id, filename, content)
+        # Keep in-memory folder tree synced if caller reuses root_cache across multiple files
+        if not any(c.name == filename and not isinstance(c, ProjectFolder) for c in target_folder.children):
+            target_folder.children.append(uploaded)
+
         return {
             "project_id": pid,
             "remote_path": norm_path,
@@ -412,8 +457,7 @@ class OverleafWebClient:
             raise NotADirectoryError(f"Local directory not found: {src_dir}")
 
         pid = self.resolve_project_id(project)
-        api = self.get_api()
-        root = api.project_get_files(pid)
+        root = self._get_project_root_folder(pid)
 
         patterns = tuple(ignore_patterns) if ignore_patterns is not None else DEFAULT_IGNORE_PATTERNS
         prefix = remote_dir.strip("/")
@@ -425,7 +469,7 @@ class OverleafWebClient:
             if not item.is_file():
                 continue
             rel = item.relative_to(src_dir)
-            if _should_ignore(rel.parts, patterns):
+            if should_ignore(rel.parts, patterns):
                 continue
             rel_posix = rel.as_posix()
             dest_posix = f"{prefix}/{rel_posix}" if prefix else rel_posix
@@ -454,7 +498,7 @@ class OverleafWebClient:
                 if not item.is_file():
                     continue
                 rel = item.relative_to(source_dir)
-                if _should_ignore(rel.parts, ignore_patterns):
+                if should_ignore(rel.parts, ignore_patterns):
                     continue
                 zf.write(item, arcname=rel.as_posix())
         return buf.getvalue()
@@ -510,7 +554,7 @@ class OverleafWebClient:
             )
 
             if resp.ok:
-                payload = resp.json()
+                payload = _safe_json(resp, "POST /project/new/upload")
                 pid = payload.get("project_id")
                 if pid:
                     return {
@@ -555,7 +599,7 @@ class OverleafWebClient:
             timeout=self.timeout,
         )
         resp.raise_for_status()
-        payload = resp.json()
+        payload = _safe_json(resp, "POST /project/new")
         pid = payload.get("project_id")
         if not pid:
             raise RuntimeError(f"Unexpected /project/new response: {payload}")
@@ -576,7 +620,7 @@ class OverleafWebClient:
     ) -> dict[str, Any]:
         pid = self.resolve_project_id(project)
         api = self.get_api()
-        root = api.project_get_files(pid)
+        root = self._get_project_root_folder(pid)
         entity = self._find_entity(root, remote_path)
         if entity is None:
             raise FileNotFoundError(
@@ -623,7 +667,7 @@ class OverleafWebClient:
     def delete_path(self, project: str, remote_path: str) -> dict[str, Any]:
         pid = self.resolve_project_id(project)
         api = self.get_api()
-        root = api.project_get_files(pid)
+        root = self._get_project_root_folder(pid)
         entity = self._find_entity(root, remote_path)
         if entity is None:
             return {
@@ -649,22 +693,7 @@ class OverleafWebClient:
         assert isinstance(zip_bytes, bytes)
 
         dest = Path(output_dir).expanduser().resolve()
-        dest.mkdir(parents=True, exist_ok=True)
-
-        extracted: list[str] = []
-        with zipfile.ZipFile(io.BytesIO(zip_bytes), "r") as zf:
-            for member in zf.infolist():
-                # Guard against zip-slip path traversal
-                member_path = (dest / member.filename).resolve()
-                if not str(member_path).startswith(str(dest)):
-                    continue
-                if member.is_dir():
-                    member_path.mkdir(parents=True, exist_ok=True)
-                else:
-                    member_path.parent.mkdir(parents=True, exist_ok=True)
-                    with zf.open(member, "r") as src_f:
-                        member_path.write_bytes(src_f.read())
-                    extracted.append(member.filename)
+        extracted = safe_extract_zip(zip_bytes, dest)
 
         return {
             "project_id": pid,
@@ -711,7 +740,7 @@ class OverleafWebClient:
         }
 
         if root_doc_path:
-            root = self.get_api().project_get_files(pid)
+            root = self._get_project_root_folder(pid)
             entity = self._find_entity(root, root_doc_path)
             if entity is None or isinstance(entity, ProjectFolder):
                 raise FileNotFoundError(
@@ -720,35 +749,33 @@ class OverleafWebClient:
             body["rootDoc_id"] = entity.id
 
         compile_url = f"https://{self.host}/project/{pid}/compile"
+        compile_headers = {
+            "Referer": f"https://{self.host}/project/{pid}",
+            "Accept": "application/json",
+            "Cache-Control": "no-cache",
+            "x-csrf-token": csrf,
+        }
         resp = session.post(
             compile_url,
             json=body,
-            headers={
-                "Referer": f"https://{self.host}/project/{pid}",
-                "Accept": "application/json",
-                "Cache-Control": "no-cache",
-                "x-csrf-token": csrf,
-            },
+            headers=compile_headers,
             timeout=max(self.timeout, 180),
         )
+        resp.raise_for_status()
+        data = _safe_json(resp, f"POST /project/{pid}/compile")
 
         # Retry once if Overleaf throttles back-to-back compiles
-        if resp.ok and resp.json().get("status") == "too-recently-compiled":
+        if data.get("status") == "too-recently-compiled":
             time.sleep(2.5)
             resp = session.post(
                 compile_url,
                 json=body,
-                headers={
-                    "Referer": f"https://{self.host}/project/{pid}",
-                    "Accept": "application/json",
-                    "Cache-Control": "no-cache",
-                    "x-csrf-token": csrf,
-                },
+                headers=compile_headers,
                 timeout=max(self.timeout, 180),
             )
+            resp.raise_for_status()
+            data = _safe_json(resp, f"POST /project/{pid}/compile (retry)")
 
-        resp.raise_for_status()
-        data = resp.json()
         status = data.get("status", "unknown")
         output_files: list[dict[str, Any]] = data.get("outputFiles") or []
 

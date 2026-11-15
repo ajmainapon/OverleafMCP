@@ -10,7 +10,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from .config import OverleafConfig
+from .config import DEFAULT_IGNORE_PATTERNS, OverleafConfig, should_ignore
 
 _PROJECT_ID_RE = re.compile(r"([0-9a-f]{24})", re.IGNORECASE)
 
@@ -81,7 +81,11 @@ class OverleafGitClient:
     def _sanitize_error(self, text: str) -> str:
         if self.config.git_token:
             text = text.replace(self.config.git_token, "***")
-        return re.sub(r"Authorization:\s*Basic\s+[A-Za-z0-9+/=]+", "Authorization: Basic ***", text)
+        return re.sub(
+            r"Authorization:\s*Basic\s+[A-Za-z0-9+/=]+",
+            "Authorization: Basic ***",
+            text,
+        )
 
     def resolve_repo_dir(self, project_id: str, local_dir: str | None = None) -> Path:
         if local_dir:
@@ -96,9 +100,8 @@ class OverleafGitClient:
         url = self.remote_url(pid)
 
         if (target / ".git").exists():
-            proc = self._run_git(["pull", "--rebase", "origin", "master"], cwd=target)
+            proc = self._run_git(["pull", "--rebase", "origin", "HEAD"], cwd=target)
             if proc.returncode != 0:
-                # Some newer repos may use main or default HEAD branch
                 proc = self._run_git(["pull", "--rebase"], cwd=target)
             if proc.returncode != 0:
                 raise RuntimeError(
@@ -117,7 +120,7 @@ class OverleafGitClient:
             output = (proc.stdout or proc.stderr).strip()
 
         files = [
-            str(p.relative_to(target))
+            p.relative_to(target).as_posix()
             for p in sorted(target.rglob("*"))
             if p.is_file() and ".git" not in p.parts
         ]
@@ -178,40 +181,35 @@ class OverleafGitClient:
         checkout_info = self.clone_or_pull(pid)
         repo_dir = Path(checkout_info["local_dir"])
 
-        ignored = set(
-            ignore_patterns
-            or [
-                ".git",
-                ".venv",
-                "venv",
-                "__pycache__",
-                ".DS_Store",
-                "node_modules",
-            ]
+        patterns = (
+            tuple(ignore_patterns)
+            if ignore_patterns is not None
+            else DEFAULT_IGNORE_PATTERNS
         )
 
         copied_files: list[str] = []
         source_rel_paths: set[Path] = set()
-        for item in src.rglob("*"):
-            rel = item.relative_to(src)
-            if any(part in ignored for part in rel.parts):
+        for item in sorted(src.rglob("*")):
+            if not item.is_file():
                 continue
-            if item.is_file():
-                source_rel_paths.add(rel)
-                dest = repo_dir / rel
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(item, dest)
-                copied_files.append(str(rel))
+            rel = item.relative_to(src)
+            if should_ignore(rel.parts, patterns):
+                continue
+            source_rel_paths.add(rel)
+            dest = repo_dir / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(item, dest)
+            copied_files.append(rel.as_posix())
 
         removed_files: list[str] = []
         if delete_missing:
-            for existing in repo_dir.rglob("*"):
+            for existing in sorted(repo_dir.rglob("*")):
                 if not existing.is_file() or ".git" in existing.parts:
                     continue
                 rel = existing.relative_to(repo_dir)
                 if rel not in source_rel_paths:
                     existing.unlink()
-                    removed_files.append(str(rel))
+                    removed_files.append(rel.as_posix())
 
         push_result = self.commit_and_push(
             project_id=pid,

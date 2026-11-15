@@ -1,21 +1,61 @@
-"""Configuration and credential management for Overleaf MCP Server."""
+"""Configuration, credential storage, and ignore-pattern helpers for Overleaf MCP Server."""
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import os
 import stat
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-CONFIG_DIR = Path(
-    os.environ.get("OVERLEAF_MCP_CONFIG_DIR", "~/.config/overleaf-mcp")
-).expanduser()
-CREDENTIALS_FILE = CONFIG_DIR / "credentials.json"
-DEFAULT_GIT_CACHE_DIR = Path(
-    os.environ.get("OVERLEAF_MCP_GIT_DIR", "~/.cache/overleaf-mcp/repos")
-).expanduser()
+DEFAULT_IGNORE_PATTERNS: tuple[str, ...] = (
+    ".git",
+    ".svn",
+    ".hg",
+    ".DS_Store",
+    "__pycache__",
+    ".venv",
+    "venv",
+    "node_modules",
+    "*.aux",
+    "*.fdb_latexmk",
+    "*.fls",
+    "*.synctex.gz",
+    "*.out",
+    "*.toc",
+    "*.lof",
+    "*.lot",
+)
+
+
+def should_ignore(
+    rel_parts: tuple[str, ...],
+    ignore_patterns: tuple[str, ...] = DEFAULT_IGNORE_PATTERNS,
+) -> bool:
+    """Return True if any path component matches any fnmatch glob pattern."""
+    for part in rel_parts:
+        for pat in ignore_patterns:
+            if fnmatch.fnmatch(part, pat):
+                return True
+    return False
+
+
+def get_config_dir() -> Path:
+    return Path(
+        os.environ.get("OVERLEAF_MCP_CONFIG_DIR", "~/.config/overleaf-mcp")
+    ).expanduser()
+
+
+def get_credentials_file() -> Path:
+    return get_config_dir() / "credentials.json"
+
+
+def get_default_git_cache_dir() -> Path:
+    return Path(
+        os.environ.get("OVERLEAF_MCP_GIT_DIR", "~/.cache/overleaf-mcp/repos")
+    ).expanduser()
 
 
 def _normalize_host(raw_host: str) -> str:
@@ -40,14 +80,15 @@ class OverleafConfig:
     git_host: str = "git.overleaf.com"
     cookie: str | None = None
     git_token: str | None = None
-    git_cache_dir: Path = DEFAULT_GIT_CACHE_DIR
+    git_cache_dir: Path = field(default_factory=get_default_git_cache_dir)
 
     @classmethod
     def load(cls) -> OverleafConfig:
+        creds_file = get_credentials_file()
         saved: dict[str, Any] = {}
-        if CREDENTIALS_FILE.exists():
+        if creds_file.exists():
             try:
-                saved = json.loads(CREDENTIALS_FILE.read_text(encoding="utf-8"))
+                saved = json.loads(creds_file.read_text(encoding="utf-8"))
             except Exception:
                 saved = {}
 
@@ -84,7 +125,9 @@ class OverleafConfig:
 
         git_dir_raw = os.environ.get("OVERLEAF_MCP_GIT_DIR") or saved.get("git_cache_dir")
         git_cache_dir = (
-            Path(git_dir_raw).expanduser() if git_dir_raw else DEFAULT_GIT_CACHE_DIR
+            Path(git_dir_raw).expanduser()
+            if git_dir_raw
+            else get_default_git_cache_dir()
         )
 
         return cls(
@@ -103,17 +146,20 @@ class OverleafConfig:
         host: str | None = None,
         git_host: str | None = None,
     ) -> Path:
-        """Persist non-None credential updates to ~/.config/overleaf-mcp/credentials.json (0600)."""
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        """Persist non-None credential updates to <config_dir>/credentials.json (mode 0600)."""
+        cfg_dir = get_config_dir()
+        creds_file = get_credentials_file()
+
+        cfg_dir.mkdir(parents=True, exist_ok=True)
         try:
-            CONFIG_DIR.chmod(stat.S_IRWXU)
+            cfg_dir.chmod(stat.S_IRWXU)
         except OSError:
             pass
 
         saved: dict[str, Any] = {}
-        if CREDENTIALS_FILE.exists():
+        if creds_file.exists():
             try:
-                saved = json.loads(CREDENTIALS_FILE.read_text(encoding="utf-8"))
+                saved = json.loads(creds_file.read_text(encoding="utf-8"))
             except Exception:
                 saved = {}
 
@@ -126,11 +172,11 @@ class OverleafConfig:
         if git_host is not None and git_host.strip():
             saved["git_host"] = _normalize_host(git_host)
 
-        CREDENTIALS_FILE.write_text(
+        creds_file.write_text(
             json.dumps(saved, indent=2) + "\n", encoding="utf-8"
         )
         try:
-            CREDENTIALS_FILE.chmod(stat.S_IRUSR | stat.S_IWUSR)
+            creds_file.chmod(stat.S_IRUSR | stat.S_IWUSR)
         except OSError:
             pass
-        return CREDENTIALS_FILE
+        return creds_file

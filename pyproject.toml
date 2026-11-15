@@ -1,6 +1,6 @@
 [project]
 name = "overleaf-mcp"
-version = "0.1.0"
+version = "0.1.1"
 description = "Hybrid Overleaf MCP Server supporting Web Session cookies (Free/Paid) and Git Bridge tokens (Paid/Institutional)"
 readme = "README.md"
 license = "MIT"
@@ -16,7 +16,10 @@ keywords = [
     "latex",
     "tex",
     "ai-agent",
+    "codex",
+    "openai-codex",
     "claude",
+    "claude-code",
     "cursor",
     "antigravity",
     "academic-writing",

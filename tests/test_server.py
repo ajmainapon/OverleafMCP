@@ -1,24 +1,28 @@
-"""Tests for Overleaf MCP Server protocol handshake and core helpers."""
+"""Tests for Overleaf MCP Server protocol handshake, security guards, and core helpers."""
 
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import os
 import tempfile
 import zipfile
-import io
 from pathlib import Path
+from unittest.mock import MagicMock
 
+import requests
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-from overleaf_mcp.config import OverleafConfig
-from overleaf_mcp.git_client import OverleafGitClient, extract_project_id_from_ref
+from overleaf_mcp.config import OverleafConfig, should_ignore
+from overleaf_mcp.git_client import extract_project_id_from_ref
 from overleaf_mcp.web_client import (
     OverleafWebClient,
     _parse_cookie_string,
+    _safe_json,
     parse_latex_log,
+    safe_extract_zip,
 )
 
 
@@ -46,6 +50,94 @@ def test_cookie_and_log_parsers() -> None:
     assert diag["error_count"] == 1
     assert diag["warning_count"] == 1
     assert "\\badmacro" in diag["errors"][0]
+
+
+def test_dynamic_config_and_glob_ignore() -> None:
+    # Verify glob matching works for both directory names and wildcard extensions
+    assert should_ignore((".git", "config")) is True
+    assert should_ignore(("sections", "intro.aux")) is True
+    assert should_ignore(("sections", "intro.tex")) is False
+    assert should_ignore(("build.pdf",), ("*.pdf",)) is True
+
+    # Verify OVERLEAF_MCP_CONFIG_DIR is resolved dynamically at runtime (not frozen at import)
+    old_val = os.environ.get("OVERLEAF_MCP_CONFIG_DIR")
+    try:
+        with tempfile.TemporaryDirectory() as tmp_cfg:
+            os.environ["OVERLEAF_MCP_CONFIG_DIR"] = tmp_cfg
+            cfg = OverleafConfig.load()
+            saved_file = cfg.save_updates(git_token="olp_dynamic_test")
+            assert saved_file == Path(tmp_cfg) / "credentials.json"
+            reloaded = OverleafConfig.load()
+            assert reloaded.git_token == "olp_dynamic_test"
+    finally:
+        if old_val is None:
+            os.environ.pop("OVERLEAF_MCP_CONFIG_DIR", None)
+        else:
+            os.environ["OVERLEAF_MCP_CONFIG_DIR"] = old_val
+
+
+def test_zip_slip_sibling_prefix_defense() -> None:
+    """Ensure '../paper-evil/pwn.tex' cannot escape '/tmp/.../paper' via prefix matching."""
+    with tempfile.TemporaryDirectory() as base_tmp:
+        dest = Path(base_tmp) / "paper"
+        sibling_evil = Path(base_tmp) / "paper-evil"
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("main.tex", "\\documentclass{article}")
+            zf.writestr("../paper-evil/pwn.tex", "malicious")
+
+        extracted = safe_extract_zip(buf.getvalue(), dest)
+        assert extracted == ["main.tex"]
+        assert (dest / "main.tex").exists()
+        assert not (sibling_evil / "pwn.tex").exists()
+
+
+def test_websocket_close_and_safe_json() -> None:
+    """Ensure _get_project_root_folder always closes its socket and _safe_json catches HTML."""
+    cfg = OverleafConfig(cookie="overleaf_session2=s%3Adummy")
+    client = OverleafWebClient(cfg)
+
+    fake_socket = MagicMock()
+    join_payload = {
+        "name": "joinProjectResponse",
+        "args": [
+            {
+                "project": {
+                    "rootFolder": [
+                        {
+                            "_id": "root123",
+                            "name": "rootFolder",
+                            "folders": [],
+                            "fileRefs": [],
+                            "docs": [{"_id": "doc1", "name": "main.tex"}],
+                        }
+                    ]
+                }
+            }
+        ],
+    }
+    fake_socket.recv.side_effect = ["1::", f"5:::{json.dumps(join_payload)}"]
+
+    fake_api = MagicMock()
+    fake_api._open_socket.return_value = fake_socket
+    client._api = fake_api
+
+    root = client._get_project_root_folder("65f0a1b2c3d4e5f601234567")
+    assert root.id == "root123"
+    assert len(root.children) == 1
+    fake_socket.close.assert_called_once()
+
+    # Verify _safe_json surfaces clear error on HTML gateway response
+    bad_resp = requests.Response()
+    bad_resp.status_code = 502
+    bad_resp.url = "https://www.overleaf.com/project/123/compile"
+    bad_resp._content = b"<html><body>502 Bad Gateway</body></html>"
+    try:
+        _safe_json(bad_resp, "POST /compile")
+        raise AssertionError("Expected RuntimeError on non-JSON response")
+    except RuntimeError as exc:
+        assert "502 Bad Gateway" in str(exc)
 
 
 def test_zip_builder_and_git_ref() -> None:
@@ -118,10 +210,16 @@ async def verify_mcp_stdio() -> None:
                 )
                 status_payload = json.loads(status_res.content[0].text)
                 assert status_payload["git_bridge"]["ready"] is True
-                print(f"Verified {len(tool_names)} MCP tools over Stdio successfully!")
+                assert status_payload["credentials_file"] == str(
+                    Path(cfg_dir) / "credentials.json"
+                )
+                print(f"Verified {len(tool_names)} MCP tools and all security/reliability tests!")
 
 
 if __name__ == "__main__":
     test_cookie_and_log_parsers()
+    test_dynamic_config_and_glob_ignore()
+    test_zip_slip_sibling_prefix_defense()
+    test_websocket_close_and_safe_json()
     test_zip_builder_and_git_ref()
     asyncio.run(verify_mcp_stdio())
