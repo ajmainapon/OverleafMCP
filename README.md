@@ -2,7 +2,7 @@
 
 <a id="readme-top"></a>
 
-<img src="./assets/logo.svg" alt="OverleafMCP Logo" width="108" height="108" />
+<img src="./assets/logo.png" alt="OverleafMCP Logo" width="128" height="128" />
 
 # OverleafMCP
 
