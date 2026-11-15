@@ -1,0 +1,118 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 430" width="880" height="430">
+  <style>
+    .bg { fill: #0D1117; stroke: #30363D; stroke-width: 1.5; }
+    .header { fill: #161B22; }
+    .divider { stroke: #30363D; stroke-width: 1; }
+    .title { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 13px; fill: #8B949E; font-weight: 600; }
+    .mono { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace; font-size: 13.5px; }
+    .prompt { fill: #58A6FF; font-weight: 700; }
+    .user-txt { fill: #F0F6FC; }
+    .tool { fill: #D2A8FF; font-weight: 600; }
+    .dim { fill: #8B949E; }
+    .ok { fill: #3FB950; font-weight: 600; }
+    .warn { fill: #D29922; font-weight: 600; }
+    .err { fill: #F85149; }
+    .accent { fill: #79C0FF; }
+    .badge { fill: #1F6FEB; rx: 6; }
+
+    @keyframes fade1 { 0%, 6% { opacity: 0; } 10%, 94% { opacity: 1; } 98%, 100% { opacity: 0; } }
+    @keyframes fade2 { 0%, 18% { opacity: 0; } 23%, 94% { opacity: 1; } 98%, 100% { opacity: 0; } }
+    @keyframes fade3 { 0%, 34% { opacity: 0; } 39%, 94% { opacity: 1; } 98%, 100% { opacity: 0; } }
+    @keyframes fade4 { 0%, 52% { opacity: 0; } 57%, 94% { opacity: 1; } 98%, 100% { opacity: 0; } }
+    @keyframes fade5 { 0%, 68% { opacity: 0; } 73%, 94% { opacity: 1; } 98%, 100% { opacity: 0; } }
+    @keyframes fade6 { 0%, 80% { opacity: 0; } 85%, 94% { opacity: 1; } 98%, 100% { opacity: 0; } }
+
+    .s1 { animation: fade1 14s infinite; }
+    .s2 { animation: fade2 14s infinite; }
+    .s3 { animation: fade3 14s infinite; }
+    .s4 { animation: fade4 14s infinite; }
+    .s5 { animation: fade5 14s infinite; }
+    .s6 { animation: fade6 14s infinite; }
+  </style>
+
+  <!-- Window Frame -->
+  <rect x="4" y="4" width="872" height="422" rx="12" class="bg"/>
+  <path d="M4 16 C4 9.37 9.37 4 16 4 L864 4 C870.63 4 876 9.37 876 16 L876 42 L4 42 Z" class="header"/>
+  <line x1="4" y1="42" x2="876" y2="42" class="divider"/>
+
+  <!-- Traffic Lights -->
+  <circle cx="24" cy="23" r="6" fill="#FF5F56"/>
+  <circle cx="44" cy="23" r="6" fill="#FFBD2E"/>
+  <circle cx="64" cy="23" r="6" fill="#27C93F"/>
+  <text x="440" y="28" text-anchor="middle" class="title">ai-agent — overleaf-mcp (stdio)</text>
+
+  <!-- Step 1: User Prompt -->
+  <g class="s1">
+    <text x="28" y="76" class="mono">
+      <tspan class="prompt">❯ </tspan>
+      <tspan class="user-txt">Create Overleaf project "NeurIPS 2027" from ./paper, compile PDF, and fix any LaTeX errors.</tspan>
+    </text>
+  </g>
+
+  <!-- Step 2: Create Project -->
+  <g class="s2">
+    <text x="28" y="114" class="mono">
+      <tspan class="ok">● </tspan>
+      <tspan class="tool">overleaf_create_project</tspan>
+      <tspan class="dim">(project_name="NeurIPS 2027", source_path="./paper")</tspan>
+    </text>
+    <text x="46" y="138" class="mono">
+      <tspan class="dim">└─ Zipped 19 files (skipped .git, *.aux) → </tspan>
+      <tspan class="accent">https://www.overleaf.com/project/67f0a1b2c3d4e5f601234567</tspan>
+    </text>
+  </g>
+
+  <!-- Step 3: First Compile catches error -->
+  <g class="s3">
+    <text x="28" y="176" class="mono">
+      <tspan class="warn">● </tspan>
+      <tspan class="tool">overleaf_compile</tspan>
+      <tspan class="dim">(project="67f0a1b2c3d4e5f601234567")</tspan>
+    </text>
+    <text x="46" y="200" class="mono">
+      <tspan class="dim">└─ </tspan>
+      <tspan class="err">diagnostics.errors[0]: ! Undefined control sequence.  l.84 \mathcalb{L}_{total}</tspan>
+    </text>
+  </g>
+
+  <!-- Step 4: Patch & Re-upload -->
+  <g class="s4">
+    <text x="28" y="238" class="mono">
+      <tspan class="ok">● </tspan>
+      <tspan class="tool">overleaf_write_file</tspan>
+      <tspan class="dim">(project="NeurIPS 2027", remote_path="sections/method.tex")</tspan>
+    </text>
+    <text x="46" y="262" class="mono">
+      <tspan class="dim">└─ Fixed typo </tspan>
+      <tspan class="err">\mathcalb</tspan>
+      <tspan class="dim"> → </tspan>
+      <tspan class="ok">\mathcal</tspan>
+      <tspan class="dim"> on line 84 and synced to Overleaf</tspan>
+    </text>
+  </g>
+
+  <!-- Step 5: Clean Recompile & PDF Download -->
+  <g class="s5">
+    <text x="28" y="300" class="mono">
+      <tspan class="ok">● </tspan>
+      <tspan class="tool">overleaf_compile</tspan>
+      <tspan class="dim">(project="NeurIPS 2027", save_pdf_path="./neurips_2027.pdf")</tspan>
+    </text>
+    <text x="46" y="324" class="mono">
+      <tspan class="dim">└─ </tspan>
+      <tspan class="ok">status: "success"</tspan>
+      <tspan class="dim"> · 0 errors · saved </tspan>
+      <tspan class="accent">./neurips_2027.pdf</tspan>
+      <tspan class="dim"> (12 pages, 1.4 MB)</tspan>
+    </text>
+  </g>
+
+  <!-- Step 6: Final Agent Summary -->
+  <g class="s6">
+    <rect x="26" y="352" width="828" height="48" rx="8" fill="#12261E" stroke="#2EA043" stroke-width="1"/>
+    <text x="44" y="381" class="mono">
+      <tspan class="ok">✓ Done!</tspan>
+      <tspan class="user-txt"> "NeurIPS 2027" is live on Overleaf, LaTeX error patched, and ./neurips_2027.pdf is ready.</tspan>
+    </text>
+  </g>
+</svg>
