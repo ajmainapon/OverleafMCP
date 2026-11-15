@@ -1,0 +1,28 @@
+[project]
+name = "overleaf-mcp"
+version = "0.1.0"
+description = "Hybrid Overleaf MCP Server supporting Web Session cookies (Free/Paid) and Git Bridge tokens (Paid/Institutional)"
+readme = "README.md"
+license = "MIT"
+authors = [
+    { name = "Ajmain Istiak Apon" }
+]
+requires-python = ">=3.11"
+keywords = ["mcp", "overleaf", "latex", "ai-agent", "model-context-protocol"]
+dependencies = [
+    "httpx>=0.28.1",
+    "mcp[cli]>=2.3.0",
+    "pyoverleaf>=0.1.8",
+]
+
+[project.urls]
+Homepage = "https://github.com/ajmainapon/OverleafMCP"
+Repository = "https://github.com/ajmainapon/OverleafMCP"
+Issues = "https://github.com/ajmainapon/OverleafMCP/issues"
+
+[project.scripts]
+overleaf-mcp = "overleaf_mcp:main"
+
+[build-system]
+requires = ["uv_build>=0.7.0,<0.13.0"]
+build-backend = "uv_build"
